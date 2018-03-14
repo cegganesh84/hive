@@ -18,6 +18,25 @@
 
 package org.apache.hive.jdbc;
 
+import static org.apache.hive.jdbc.Utils.AltusClusterDetails.COORDINATOR;
+import static org.apache.hive.jdbc.Utils.JdbcConnectionParams.AUTH_PASSWD;
+import static org.apache.hive.jdbc.Utils.JdbcConnectionParams.AUTH_SIMPLE;
+import static org.apache.hive.jdbc.Utils.JdbcConnectionParams.AUTH_TYPE;
+import static org.apache.hive.jdbc.Utils.JdbcConnectionParams.AUTH_USER;
+import static org.apache.hive.jdbc.Utils.JdbcConnectionParams.USE_SSL;
+
+import com.cloudera.altus.AltusServiceException;
+import com.cloudera.altus.dataware.api.DatawareClient;
+import com.cloudera.altus.dataware.api.DatawareClientBuilder;
+import com.cloudera.altus.dataware.model.Cluster;
+import com.cloudera.altus.dataware.model.DescribeClusterRequest;
+import com.cloudera.altus.dataware.model.DescribeClusterResponse;
+import com.cloudera.altus.dataware.model.GetClusterAccessTokensRequest;
+import com.cloudera.altus.dataware.model.GetClusterAccessTokensResponse;
+import com.cloudera.altus.dataware.model.Instance;
+import com.cloudera.altus.dataware.model.ListInstancesRequest;
+import com.cloudera.altus.dataware.model.ListInstancesResponse;
+
 import java.net.InetAddress;
 import java.net.URI;
 import java.net.UnknownHostException;
@@ -31,6 +50,8 @@ import java.util.Properties;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import org.apache.commons.validator.routines.DomainValidator;
+import org.apache.commons.validator.routines.InetAddressValidator;
 import org.apache.hive.service.cli.HiveSQLException;
 import org.apache.hive.service.rpc.thrift.TStatus;
 import org.apache.hive.service.rpc.thrift.TStatusCode;
@@ -159,6 +180,8 @@ public class Utils {
     private Map<String,String> hiveVars = new LinkedHashMap<String,String>();
     private Map<String,String> sessionVars = new LinkedHashMap<String,String>();
     private boolean isEmbeddedMode = false;
+    private boolean isAltusCluster = false;
+    private AltusClusterDetails altusClusterDetails;
     private String[] authorityList;
     private String zooKeeperEnsemble = null;
     private String currentHostZnodePath;
@@ -180,6 +203,8 @@ public class Utils {
       this.zooKeeperEnsemble = params.zooKeeperEnsemble;
       this.currentHostZnodePath = params.currentHostZnodePath;
       this.rejectedHostZnodePaths.addAll(rejectedHostZnodePaths);
+      this.isAltusCluster = params.isAltusCluster;
+      this.altusClusterDetails = params.altusClusterDetails;
     }
 
     public String getHost() {
@@ -208,6 +233,14 @@ public class Utils {
 
     public boolean isEmbeddedMode() {
       return isEmbeddedMode;
+    }
+
+    public boolean isAltusCluster() {
+      return isAltusCluster;
+    }
+
+    public AltusClusterDetails getAltusClusterDetails() {
+      return altusClusterDetails;
     }
 
     public Map<String, String> getSessionVars() {
@@ -258,6 +291,14 @@ public class Utils {
       this.isEmbeddedMode = embeddedMode;
     }
 
+    public void setAltusCluster(boolean altusCluster) {
+      this.isAltusCluster = altusCluster;
+    }
+
+    public void setAltusClusterDetails(AltusClusterDetails altusClusterDetails) {
+      this.altusClusterDetails = altusClusterDetails;
+    }
+
     public void setSessionVars(Map<String, String> sessionVars) {
       this.sessionVars = sessionVars;
     }
@@ -273,6 +314,61 @@ public class Utils {
     public void setCurrentHostZnodePath(String currentHostZnodePath) {
       this.currentHostZnodePath = currentHostZnodePath;
     }
+  }
+
+  public static class AltusClusterDetails {
+    public static final String NOT_FOUND = "NOT_FOUND";
+    public static final String CREATED = "CREATED";
+    public static final String COORDINATOR = "coordinator";
+
+    public Cluster getCluster() {
+      return cluster;
+    }
+
+    public void setCluster(Cluster cluster) {
+      this.cluster = cluster;
+    }
+
+    public String getCoordinatorEndpoint() {
+      return coordinatorEndpoint;
+    }
+
+    public void setCoordinatorEndpoint(String coordinatorEndpoint) {
+      this.coordinatorEndpoint = coordinatorEndpoint;
+    }
+
+    public String getUser() {
+      return user;
+    }
+
+    public void setUser(String user) {
+      this.user = user;
+    }
+
+    public String getPassword() {
+      return password;
+    }
+
+    public void setPassword(String password) {
+      this.password = password;
+    }
+
+    public boolean isSecured() {
+      return secured;
+    }
+
+    public void setSecured(boolean secured) {
+      this.secured = secured;
+    }
+
+    public AltusClusterDetails() {
+    }
+
+    private Cluster cluster;
+    private String coordinatorEndpoint;
+    private String user;
+    private String password;
+    private boolean secured;
   }
 
   // Verify success or success_with_info status, else throw SQLException
@@ -433,9 +529,9 @@ public class Utils {
         }
     }
 
-    if (info.containsKey(JdbcConnectionParams.AUTH_TYPE)) {
-      connParams.getSessionVars().put(JdbcConnectionParams.AUTH_TYPE,
-          info.getProperty(JdbcConnectionParams.AUTH_TYPE));
+    if (info.containsKey(AUTH_TYPE)) {
+      connParams.getSessionVars().put(AUTH_TYPE,
+          info.getProperty(AUTH_TYPE));
     }
 
     // Handle all deprecations here:
@@ -536,7 +632,7 @@ public class Utils {
   }
 
   private static void configureConnParams(JdbcConnectionParams connParams)
-      throws JdbcUriParseException, ZooKeeperHiveClientException {
+      throws SQLException, ZooKeeperHiveClientException  {
     String serviceDiscoveryMode =
         connParams.getSessionVars().get(JdbcConnectionParams.SERVICE_DISCOVERY_MODE);
     if ((serviceDiscoveryMode != null)
@@ -556,6 +652,13 @@ public class Utils {
       if (jdbcURI.getAuthority() != null) {
         String host = jdbcURI.getHost();
         int port = jdbcURI.getPort();
+        host = handleSpecialCharsInAltusClusterName(authority, host);
+        if (isAltusCluster(host)) {
+          setupConnParamsForAltus(connParams, host);
+          return;
+        } else {
+          host = jdbcURI.getHost();
+        }
         if (host == null) {
           throw new JdbcUriParseException("Bad URL format. Hostname not found "
               + " in authority part of the url: " + jdbcURI.getAuthority()
@@ -566,10 +669,40 @@ public class Utils {
         if (port <= 0) {
           port = Integer.parseInt(Utils.DEFAULT_PORT);
         }
-        connParams.setHost(jdbcURI.getHost());
-        connParams.setPort(jdbcURI.getPort());
+        connParams.setHost(host);
+        connParams.setPort(port);
       }
     }
+  }
+
+  private static void setupConnParamsForAltus(JdbcConnectionParams connParams, String host)
+      throws SQLException {
+    connParams.setAltusCluster(true);
+    DatawareClient analyticdbClient = DatawareClientBuilder.defaultBuilder().build();
+    AltusClusterDetails details = getAltusClusterDetails(analyticdbClient, host);
+    connParams.setHost(details.getCoordinatorEndpoint());
+    connParams.setPort(21050);
+    if (details.isSecured()) {
+      connParams.getSessionVars().put(USE_SSL, "true");
+      connParams.getSessionVars().put(AUTH_USER, details.getUser());
+      connParams.getSessionVars().put(AUTH_PASSWD, details.getPassword());
+    } else {
+      connParams.getSessionVars().put(AUTH_TYPE, AUTH_SIMPLE);
+    }
+    connParams.setAltusClusterDetails(details);
+  }
+
+  private static String handleSpecialCharsInAltusClusterName(String authority, String host) {
+    if (host == null || host.isEmpty()) {
+      // User could have passed Altus cluster name which had special characters that are not acceptable as domainname
+      int lastIndexOfColon = authority.lastIndexOf(':');
+      if (lastIndexOfColon == -1) {
+        host = authority;
+      } else {
+        host = authority.substring(0, lastIndexOfColon);
+      }
+    }
+    return host;
   }
 
   /**
@@ -689,6 +822,85 @@ public class Utils {
     catch(UnknownHostException exception) {
       LOG.warn("Could not retrieve canonical hostname for " + hostName, exception);
       return hostName;
+    }
+  }
+
+  private static boolean isAltusCluster(String host) {
+    return !host.isEmpty()
+        && !InetAddressValidator.getInstance().isValid(host)
+        && !DomainValidator.getInstance().isValid(host)
+        && !DomainValidator.getInstance().isValidLocalTld(host);
+  }
+
+  private static AltusClusterDetails getAltusClusterDetails(DatawareClient analyticdbClient, String clusterName)
+      throws SQLException {
+    AltusClusterDetails altusClusterDetails = new AltusClusterDetails();
+    DescribeClusterRequest request = new DescribeClusterRequest();
+    request.setClusterName(clusterName);
+    DescribeClusterResponse response;
+    try {
+      response = analyticdbClient.describeCluster(request);
+    } catch (AltusServiceException e) {
+      throw handleAltusServiceException(clusterName, e);
+    }
+
+    if (!response.getCluster().getStatus().equals(AltusClusterDetails.CREATED)) {
+      throw new SQLException("Altus cluster " + clusterName + " is not in CREATED state");
+    }
+
+    altusClusterDetails.setCluster(response.getCluster());
+
+    altusClusterDetails.setCoordinatorEndpoint(getAltusCoordinatorEndpoint(analyticdbClient, clusterName));
+
+    if (response.getCluster().getSecurityConfiguration() != null && response.getCluster().getSecurityConfiguration().getEnabled()) {
+      altusClusterDetails.setSecured(true);
+      GetClusterAccessTokensResponse altusClusterAccessCreds =
+          getAltusClusterAccessCreds(analyticdbClient, clusterName);
+      altusClusterDetails.setUser(altusClusterAccessCreds.getLdapTokenDetails().getUsername());
+      altusClusterDetails.setPassword(altusClusterAccessCreds.getLdapTokenDetails().getPassword());
+    }
+
+    return altusClusterDetails;
+  }
+
+  private static SQLException handleAltusServiceException(String clusterName, AltusServiceException e)
+      throws SQLException {
+    if (!e.getStatusCode().equals(AltusClusterDetails.NOT_FOUND)) {
+      return new SQLException(e);
+    } else {
+      return new SQLException("Altus cluster " + clusterName + " does not exist");
+    }
+  }
+
+  private static String getAltusCoordinatorEndpoint(DatawareClient analyticdbClient, String clusterName)
+      throws SQLException {
+    ListInstancesRequest request = new ListInstancesRequest();
+    request.setClusterName(clusterName);
+    ListInstancesResponse response;
+    try {
+      response = analyticdbClient.listInstances(request);
+    } catch (AltusServiceException e) {
+      throw handleAltusServiceException(clusterName, e);
+    }
+
+    for (Instance i : response.getInstances()) {
+      if (i.getRole().equalsIgnoreCase(COORDINATOR)) {
+        return i.getPublicIpAddress();
+      }
+    }
+
+    throw new SQLException("Altus cluster " + clusterName + " is not in CREATED state");
+  }
+
+  private static GetClusterAccessTokensResponse getAltusClusterAccessCreds(DatawareClient analyticdbClient, String
+      clusterName)
+      throws SQLException {
+    GetClusterAccessTokensRequest request = new GetClusterAccessTokensRequest();
+    request.setClusterName(clusterName);
+    try {
+      return analyticdbClient.getClusterAccessTokens(request);
+    } catch (AltusServiceException e) {
+      throw handleAltusServiceException(clusterName, e);
     }
   }
 

@@ -31,6 +31,16 @@
     <hive.path.to.root>..</hive.path.to.root>
     <packaging.minimizeJar>false</packaging.minimizeJar>
   </properties>
+  <repositories>
+    <repository>
+      <id>internal.cdh.snapshots.repo</id>
+      <url>http://maven.jenkins.cloudera.com:8081/artifactory/libs-snapshot-local</url>
+      <name>Snapshots Repository</name>
+      <snapshots>
+        <enabled>true</enabled>
+      </snapshots>
+    </repository>
+  </repositories>
 
   <dependencies>
     <!-- dependencies are always listed in sorted order by groupId, artifectId -->
@@ -120,6 +130,17 @@
       <groupId>org.mockito</groupId>
       <artifactId>mockito-all</artifactId>
       <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>com.cloudera.altus</groupId>
+      <artifactId>altus-sdk-java</artifactId>
+      <version>0.1-20180920.200143-3498</version>
+      <classifier>internal</classifier>
+    </dependency>
+    <dependency>
+      <groupId>commons-validator</groupId>
+      <artifactId>commons-validator</artifactId>
+      <version>1.5.0</version>
     </dependency>
   </dependencies>
 
