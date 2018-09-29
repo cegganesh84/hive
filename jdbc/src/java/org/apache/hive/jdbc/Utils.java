@@ -361,6 +361,14 @@ public class Utils {
       this.secured = secured;
     }
 
+    public String getRootCertificate() {
+      return rootCertificate;
+    }
+
+    public void setRootCertificate(String rootCertificate) {
+      this.rootCertificate = rootCertificate;
+    }
+
     public AltusClusterDetails() {
     }
 
@@ -369,6 +377,7 @@ public class Utils {
     private String user;
     private String password;
     private boolean secured;
+    private String rootCertificate;
   }
 
   // Verify success or success_with_info status, else throw SQLException
@@ -854,6 +863,7 @@ public class Utils {
 
     if (response.getCluster().getSecurityConfiguration() != null && response.getCluster().getSecurityConfiguration().getEnabled()) {
       altusClusterDetails.setSecured(true);
+      altusClusterDetails.setRootCertificate(response.getCluster().getRootCertificate());
       GetClusterAccessTokensResponse altusClusterAccessCreds =
           getAltusClusterAccessCreds(analyticdbClient, clusterName);
       altusClusterDetails.setUser(altusClusterAccessCreds.getLdapTokenDetails().getUsername());

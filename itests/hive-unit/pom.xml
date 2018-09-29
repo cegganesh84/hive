@@ -468,6 +468,10 @@
       <version>${plexus.version}</version>
       <scope>test</scope>
     </dependency>
+      <groupId>net.i2p.crypto</groupId>
+      <artifactId>eddsa</artifactId>
+      <version>0.3.0</version>
+      <scope>test</scope>
   </dependencies>
 
   <profiles>

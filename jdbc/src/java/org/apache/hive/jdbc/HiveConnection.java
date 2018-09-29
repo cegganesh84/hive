@@ -19,11 +19,13 @@
 package org.apache.hive.jdbc;
 
 import java.io.BufferedReader;
+import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.io.StringReader;
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
@@ -31,8 +33,7 @@ import java.lang.reflect.Proxy;
 import java.security.KeyStore;
 import java.security.SecureRandom;
 import java.security.cert.Certificate;
-import java.security.cert.CertificateExpiredException;
-import java.security.cert.X509Certificate;
+import java.security.cert.CertificateFactory;
 import java.sql.Array;
 import java.sql.Blob;
 import java.sql.CallableStatement;
@@ -63,14 +64,11 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.ReentrantLock;
 
-import javax.net.SocketFactory;
 import javax.net.ssl.KeyManagerFactory;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLParameters;
 import javax.net.ssl.SSLSocket;
-import javax.net.ssl.TrustManager;
 import javax.net.ssl.TrustManagerFactory;
-import javax.net.ssl.X509TrustManager;
 import javax.security.sasl.Sasl;
 import javax.security.sasl.SaslException;
 
@@ -121,6 +119,8 @@ import org.apache.thrift.transport.TSSLTransportFactory;
 import org.apache.thrift.transport.TSocket;
 import org.apache.thrift.transport.TTransport;
 import org.apache.thrift.transport.TTransportException;
+import org.bouncycastle.util.io.pem.PemObject;
+import org.bouncycastle.util.io.pem.PemReader;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -550,47 +550,32 @@ public class HiveConnection implements java.sql.Connection {
         sslTrustStore = "/tmp/" + clusterName;
         sslTrustStorePassword = clusterName;
 
-        TrustManager tm = new X509TrustManager() {
-          public void checkClientTrusted(X509Certificate[] chain, String authType) {
+        LOG.info("Setting up local truststore for storing root certificate of the Altus cluster : " + clusterName);
+
+        KeyStore keyStore;
+        try (FileOutputStream fos = new FileOutputStream(sslTrustStore)) {
+          keyStore = KeyStore.getInstance("JKS");
+          keyStore.load(null, sslTrustStorePassword.toCharArray());
+          keyStore.store(fos, sslTrustStorePassword.toCharArray());
+        } catch (Exception e) {
+          throw new TTransportException(e);
+        }
+
+        LOG.info("Converting root certificate in string format to X509 object.");
+        StringReader stringReader = new StringReader(connParams.getAltusClusterDetails().getCluster().getRootCertificate());
+        PemReader pemReader = new PemReader(stringReader);
+        PemObject pemObject;
+        try (FileOutputStream fos = new FileOutputStream(sslTrustStore)) {
+          pemObject = pemReader.readPemObject();
+          if (pemObject == null) {
+            throw new TTransportException("Could not read root certificate of Altus cluster : " + clusterName);
           }
-
-          public X509Certificate[] getAcceptedIssuers() {
-            return null;
-          }
-
-          public void checkServerTrusted(X509Certificate[] chain, String authType) {
-          }
-        };
-        try {
-          SSLContext ctx = SSLContext.getInstance("TLS");
-          ctx.init(null, new TrustManager[] { tm }, new SecureRandom());
-          SocketFactory factory = ctx.getSocketFactory();
-          SSLSocket socket = (SSLSocket) factory.createSocket(host, port);
-
-          socket.startHandshake();
-
-          Certificate[] certs = socket.getSession().getPeerCertificates();
-
-          KeyStore ks = KeyStore.getInstance("JKS");
-          ks.load(null, sslTrustStorePassword.toCharArray());
-          ks.store(new FileOutputStream(sslTrustStore), sslTrustStorePassword.toCharArray());
-          ks.load(new FileInputStream(sslTrustStore), sslTrustStorePassword.toCharArray());
-
-          int i = 0;
-          for (Certificate cert : certs) {
-            if (cert instanceof X509Certificate) {
-              try {
-                X509Certificate certificate = (X509Certificate) cert;
-                certificate.checkValidity();
-                ks.setCertificateEntry(clusterName + i++, certificate);
-              } catch (CertificateExpiredException cee) {
-                throw new SQLException(cee);
-              }
-            }
-          }
-
-          ks.store(new FileOutputStream(sslTrustStore), sslTrustStorePassword.toCharArray());
-          socket.close();
+          CertificateFactory certificateFactory = CertificateFactory.getInstance("X509");
+          Certificate certificate =
+              certificateFactory.generateCertificate(new ByteArrayInputStream(pemObject.getContent()));
+          LOG.info("Storing X509 certificate to local truststore.");
+          keyStore.setCertificateEntry(clusterName, certificate);
+          keyStore.store(fos, sslTrustStorePassword.toCharArray());
         } catch (Exception e) {
           throw new TTransportException(e);
         }
